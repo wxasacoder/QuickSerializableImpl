@@ -9,44 +9,39 @@ import java.io.IOException;
 import java.lang.reflect.Modifier;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.Arrays;
-import java.util.Comparator;
+import java.util.*;
 
 public class SerialVersionUIDBuilder {
 
     /**
      * 根据 PsiClass 计算默认的 serialVersionUID.
-     *
-     * @param psiClass 要计算的 PsiClass 对象
-     * @return 计算出的 serialVersionUID
      */
     public static long computeDefaultSUID(PsiClass psiClass) {
         if (psiClass.isInterface() || psiClass.isAnnotationType() || psiClass.isEnum() || psiClass.isRecord()) {
-             return 0L;
+            return 0L;
         }
 
         try {
             ByteArrayOutputStream bout = new ByteArrayOutputStream();
             DataOutputStream dout = new DataOutputStream(bout);
 
+            // 类名
+            String qname = psiClass.getQualifiedName();
+            if (qname == null) qname = psiClass.getName();
+            dout.writeUTF(qname);
 
-            dout.writeUTF(psiClass.getQualifiedName());
-
-
+            // 类修饰符
             int classMods = getPsiClassModifiers(psiClass) &
                     (Modifier.PUBLIC | Modifier.FINAL | Modifier.INTERFACE | Modifier.ABSTRACT);
             dout.writeInt(classMods);
 
-
-            String[] interfaceNames = Arrays.stream(psiClass.getInterfaces())
-                    .map(PsiClass::getQualifiedName)
-                    .sorted()
-                    .toArray(String[]::new);
+            // 收集所有声明的接口（包括父类继承的）并排序
+            String[] interfaceNames = getAllInterfaceNames(psiClass).stream().sorted().toArray(String[]::new);
             for (String name : interfaceNames) {
                 dout.writeUTF(name);
             }
 
-
+            // 字段：按名字排序
             PsiField[] fields = psiClass.getFields();
             Arrays.sort(fields, Comparator.comparing(PsiField::getName));
             for (PsiField field : fields) {
@@ -55,6 +50,7 @@ public class SerialVersionUIDBuilder {
                                 Modifier.STATIC | Modifier.FINAL | Modifier.VOLATILE |
                                 Modifier.TRANSIENT);
 
+
                 if (((mods & Modifier.PRIVATE) == 0) || ((mods & (Modifier.STATIC | Modifier.TRANSIENT)) == 0)) {
                     dout.writeUTF(field.getName());
                     dout.writeInt(mods);
@@ -62,14 +58,13 @@ public class SerialVersionUIDBuilder {
                 }
             }
 
-
-            if (hasStaticInitializer(psiClass)) {
+            if (hasStaticInitializerOrNonConstantStaticField(psiClass)) {
                 dout.writeUTF("<clinit>");
                 dout.writeInt(Modifier.STATIC);
                 dout.writeUTF("()V");
             }
 
-
+            // 构造函数：按签名排序
             PsiMethod[] constructors = psiClass.getConstructors();
             Arrays.sort(constructors, Comparator.comparing(SerialVersionUIDBuilder::getSignature));
             for (PsiMethod constructor : constructors) {
@@ -80,11 +75,12 @@ public class SerialVersionUIDBuilder {
                 if ((mods & Modifier.PRIVATE) == 0) {
                     dout.writeUTF("<init>");
                     dout.writeInt(mods);
-                    dout.writeUTF(getSignature(constructor).replace('/', '.'));
+
+                    dout.writeUTF(getSignature(constructor));
                 }
             }
 
-
+            // 普通方法：按 name + signature 排序
             PsiMethod[] methods = psiClass.getMethods();
             Arrays.sort(methods, Comparator.comparing(PsiMethod::getName).thenComparing(SerialVersionUIDBuilder::getSignature));
             for (PsiMethod method : methods) {
@@ -95,12 +91,11 @@ public class SerialVersionUIDBuilder {
                 if ((mods & Modifier.PRIVATE) == 0) {
                     dout.writeUTF(method.getName());
                     dout.writeInt(mods);
-                    dout.writeUTF(getSignature(method).replace('/', '.'));
+                    dout.writeUTF(getSignature(method));
                 }
             }
 
             dout.flush();
-
 
             MessageDigest md = MessageDigest.getInstance("SHA");
             byte[] hashBytes = md.digest(bout.toByteArray());
@@ -118,9 +113,6 @@ public class SerialVersionUIDBuilder {
         }
     }
 
-    /**
-     * 获取 PsiClass 的修饰符.
-     */
     private static int getPsiClassModifiers(PsiClass psiClass) {
         int modifiers = 0;
         if (psiClass.hasModifierProperty(PsiModifier.PUBLIC)) modifiers |= Modifier.PUBLIC;
@@ -130,9 +122,6 @@ public class SerialVersionUIDBuilder {
         return modifiers;
     }
 
-    /**
-     * 获取 PsiModifierListOwner (如字段、方法) 的修饰符.
-     */
     private static int getPsiModifiers(PsiModifierListOwner owner) {
         int modifiers = 0;
         if (owner.hasModifierProperty(PsiModifier.PUBLIC)) modifiers |= Modifier.PUBLIC;
@@ -149,21 +138,58 @@ public class SerialVersionUIDBuilder {
         return modifiers;
     }
 
-    /**
-     * 检查 PsiClass 是否有静态初始化块.
-     */
-    private static boolean hasStaticInitializer(PsiClass psiClass) {
+    private static boolean hasStaticInitializerOrNonConstantStaticField(PsiClass psiClass) {
+        // 显式的 static initializer
         for (PsiClassInitializer initializer : psiClass.getInitializers()) {
             if (initializer.hasModifierProperty(PsiModifier.STATIC)) {
                 return true;
             }
         }
+
+        // 如果存在 static 字段且该字段有 initializer 且不是编译时常量，则视为需要 <clinit>
+        PsiField[] fields = psiClass.getFields();
+        PsiConstantEvaluationHelper constHelper = JavaPsiFacade.getInstance(psiClass.getProject()).getConstantEvaluationHelper();
+        for (PsiField field : fields) {
+            if (field.hasModifierProperty(PsiModifier.STATIC) && field.getInitializer() != null) {
+                // 如果能计算为常量则跳过（例如 public static final int A = 1;）
+                try {
+                    Object constValue = constHelper.computeConstantExpression(field.getInitializer());
+                    if (constValue == null) {
+                        return true; // 非编译期常量的静态初始化
+                    }
+                } catch (Exception ignored) {
+                    // 任何异常都认为不是常量，从而认为存在 <clinit>
+                    return true;
+                }
+            }
+        }
+
         return false;
     }
 
-    /**
-     * 获取 PsiMethod 的 JNI 签名.
-     */
+    private static List<String> getAllInterfaceNames(PsiClass psiClass) {
+        LinkedHashSet<String> set = new LinkedHashSet<>();
+        Queue<PsiClass> queue = new ArrayDeque<>();
+        queue.add(psiClass);
+        while (!queue.isEmpty()) {
+            PsiClass cur = queue.poll();
+            if (cur == null) continue;
+            for (PsiClass intf : cur.getInterfaces()) {
+                if (intf == null) continue;
+                String q = intf.getQualifiedName();
+                if (q == null) q = intf.getName();
+                if (q != null && set.add(q)) {
+                    // 继续加入该接口的 super interfaces
+                    queue.add(intf);
+                }
+            }
+            // 也要处理父类上的接口
+            PsiClass sup = cur.getSuperClass();
+            if (sup != null) queue.add(sup);
+        }
+        return new ArrayList<>(set);
+    }
+
     private static String getSignature(PsiMethod method) {
         StringBuilder sb = new StringBuilder();
         sb.append('(');
@@ -179,45 +205,13 @@ public class SerialVersionUIDBuilder {
         return sb.toString();
     }
 
-
-//    private static String getSignature(PsiType type) {
-//        if (type == null) {
-//            return "V"; // void
-//        }
-//        if (type instanceof PsiPrimitiveType) {
-//            if (type.equals(PsiTypes.byteType())) return "B";
-//            if (type.equals(PsiTypes.charType())) return "C";
-//            if (type.equals(PsiTypes.doubleType())) return "D";
-//            if (type.equals(PsiTypes.floatType())) return "F";
-//            if (type.equals(PsiTypes.intType())) return "I";
-//            if (type.equals(PsiTypes.longType())) return "J";
-//            if (type.equals(PsiTypes.shortType())) return "S";
-//            if (type.equals(PsiTypes.booleanType())) return "Z";
-//            if (type.equals(PsiTypes.voidType())) return "V";
-//        } else if (type instanceof PsiArrayType) {
-//            return "[" + getSignature(((PsiArrayType) type).getComponentType());
-//        } else if (type instanceof PsiClassType) {
-//            PsiClass psiClass = ((PsiClassType) type).resolve();
-//            if (psiClass != null && psiClass.getQualifiedName() != null) {
-//                return "L" + psiClass.getQualifiedName().replace('.', '/') + ";";
-//            }
-//        }
-//        // 对于泛型等复杂情况，可能需要更复杂的处理
-//        return "Ljava/lang/Object;";
-//    }
-//
-//
     private static String getSignature(PsiType type) {
         if (type == null) {
             return "V"; // void
         }
 
-        // 关键步骤：执行类型擦除
-        // serialVersionUID 的计算是基于擦除后的类型，这会移除所有泛型信息。
-        // 例如, List<String> 会被擦除为 List。
         PsiType erasedType = TypeConversionUtil.erasure(type);
 
-        // 在擦除后的类型上进行操作
         if (erasedType instanceof PsiPrimitiveType) {
             if (erasedType.equals(PsiTypes.byteType())) return "B";
             if (erasedType.equals(PsiTypes.charType())) return "C";
@@ -229,22 +223,17 @@ public class SerialVersionUIDBuilder {
             if (erasedType.equals(PsiTypes.booleanType())) return "Z";
             if (erasedType.equals(PsiTypes.voidType())) return "V";
         } else if (erasedType instanceof PsiArrayType) {
-            // 递归调用，处理多维数组
             return "[" + getSignature(((PsiArrayType) erasedType).getComponentType());
         } else if (erasedType instanceof PsiClassType) {
-            // 对于类类型，解析出 PsiClass
             PsiClass psiClass = ((PsiClassType) erasedType).resolve();
             if (psiClass != null) {
                 String qName = psiClass.getQualifiedName();
                 if (qName != null) {
-                    // JNI 签名使用 '/' 作为包分隔符
                     return "L" + qName.replace('.', '/') + ";";
                 }
             }
         }
 
-        // 如果类型无法解析
-        // 提供一个最安全的默认值，与 JDK 的行为类似。
         return "Ljava/lang/Object;";
     }
 }
