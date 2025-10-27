@@ -13,8 +13,9 @@
     <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
     <description><![CDATA[
-        a plugin to implement serializable quickly.<br>
-        <em>a plugin to implement serializable quickly</em>
+        A plugin that quickly implements the Serializable interface and generates a serialVersionUID for Java classes.<br>
+        <em>Quickly implement the Serializable interface and generate a serialVersionUID in a class;
+Batch select Java files or a folder containing Java classes to implement the Serializable interface and generate serialVersionUIDs for the Java classes within.</em>
     ]]></description>
 
     <!-- Product and plugin compatibility requirements.
@@ -28,7 +29,14 @@
                 description="Serializable Implement">
             <add-to-group group-id="GenerateGroup" anchor="last"/>
         </action>
+
+        <action id="SerializableImplFile" class="org.wx.quickserializableimpl.FileGenerateSerializableImplAndSerialIdAction" text="Serializable Impl And Gen SerialId"
+                description="Serializable Impl And Gen SerialId">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+        </action>
+
     </actions>
+
 
 
     <extensions defaultExtensionNs="com.intellij">
