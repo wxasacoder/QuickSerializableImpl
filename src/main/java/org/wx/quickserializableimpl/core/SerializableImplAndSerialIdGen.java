@@ -44,7 +44,7 @@ public class SerializableImplAndSerialIdGen {
             PsiImportList importList = javaFile.getImportList();
             PsiElementFactory factory = JavaPsiFacade.getInstance(project).getElementFactory();
             for (PsiClass psiClass : classes) {
-                if (psiClass.isInterface()) {
+                if (psiClass.isInterface() || !psiClass.isPhysical()) {
                     continue;
                 }
                 PsiReferenceList implementsList = psiClass.getImplementsList();
