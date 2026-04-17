@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "org.wx"
-version = "1.1.1"
+version = "1.1.2"
 
 repositories {
     mavenCentral()
@@ -35,7 +35,7 @@ intellijPlatform {
         ideaVersion {
 
             sinceBuild.set("232")
-            untilBuild.set("252.*")
+            untilBuild.set("261.*")
 //            sinceBuild = "251"
         }
 
